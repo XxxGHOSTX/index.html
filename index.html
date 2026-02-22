@@ -222,7 +222,7 @@
 
   <!-- Messages -->
   <div id="messages">
-    <div class="msg system">Welcome to <strong>Thalos Prime</strong>. Click ⚙️ to configure your LLM API and Telegram bot token.</div>
+    <div class="msg system">Welcome to <strong>Thalos Prime</strong>. Initializing autonomous systems…</div>
   </div>
 
   <!-- Telegram poll panel -->
@@ -347,6 +347,41 @@ function saveConfig(cfg) {
 
 let cfg = loadConfig();
 
+/* ── Known CORS proxies for auto-selection & failover ── */
+const PROXY_LIST = [
+  'https://corsproxy.io/?',
+  'https://cors.eu.org/',
+  ''  // empty string = direct connection (no proxy)
+];
+
+/* ── Auto-probe CORS proxies and pick the first reachable one ── */
+async function probeProxies() {
+  setStatus('proxy', null, 'Proxy: probing…');
+  const candidates = cfg.CORS_PROXY
+    ? [cfg.CORS_PROXY, ...PROXY_LIST.filter(p => p !== cfg.CORS_PROXY)]
+    : PROXY_LIST;
+  for (const proxy of candidates) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch((proxy || '') + 'https://api.telegram.org/', { signal: ctrl.signal });
+      clearTimeout(timer);
+      // Any HTTP response (even 4xx from Telegram's root URL) means the proxy forwarded correctly;
+      // only a thrown exception (network error/timeout) means the proxy itself is unreachable.
+      if (res.status < 600) {
+        cfg.CORS_PROXY = proxy;
+        saveConfig(cfg);
+        setStatus('proxy', !!proxy,
+          proxy ? 'Proxy: ' + proxy.replace('https://', '').split(/[/?]/)[0]
+                : 'Proxy: direct');
+        return proxy;
+      }
+    } catch { /* try next */ }
+  }
+  setStatus('proxy', false, 'Proxy: none reachable — using direct');
+  return null;
+}
+
 /* ── Chat history (for LLM context) ── */
 let chatHistory = [];       // [{role, content}]
 let tgOffset    = 0;        // Telegram getUpdates offset
@@ -436,17 +471,60 @@ function timestamp() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/* ── Simulation mode: local responses when no LLM key is available ── */
+function simulateLLM(text) {
+  const t = text.trim();
+  const cmd = t.split(/\s+/)[0].toLowerCase();
+  if (cmd === '/start' || t.startsWith('[START')) {
+    return '⚡ THALOS PRIME — SIMULATION MODE ACTIVE\n\nSovereign Intelligence online. All systems nominal.\nType /help for available commands.';
+  }
+  if (cmd === '/help') {
+    return 'Thalos Prime commands:\n/start — initialize\n/status — system status\n/scan [url] — threat analysis\n/analyze [text] — deconstruct\n/simulate [scenario] — run simulation\n/babel — Library of Babel\n/search [phrase] — search';
+  }
+  if (cmd === '/status') {
+    return '◈ THALOS PRIME STATUS\n──────────────────\n● Core: ONLINE\n● Mode: SIMULATION\n● LLM: not connected\n● Telegram: ' + (cfg.TG_TOKEN ? 'ACTIVE' : 'NOT CONFIGURED') + '\n──────────────────\nOpen ⚙️ Settings to connect a real LLM API.';
+  }
+  if (cmd === '/scan' || t.startsWith('[SCAN')) {
+    const target = (cmd === '/scan' ? t.slice('/scan'.length) : t).trim() || '(no target)';
+    return '◈ SCAN REPORT [SIM]\n──────────────────\nTarget: ' + target.slice(0, 80) + '\nHeuristic: COMPLETE\nRisk Level: UNKNOWN (simulation)\nThreats: No patterns detected\nRecommendation: Connect LLM API for real analysis.\n[Simulation Mode]';
+  }
+  if (cmd === '/analyze' || t.startsWith('[ANALYZE')) {
+    const subject = (cmd === '/analyze' ? t.slice('/analyze'.length) : t).trim() || '(no input)';
+    return '◈ ANALYSIS [SIM]\n──────────────────\nInput: "' + subject.slice(0, 60) + '"\nStructure: PARSED\nLogic: COHERENT\nComplexity: MEDIUM\n[Simulation Mode — connect LLM API for real analysis]';
+  }
+  if (cmd === '/simulate' || t.startsWith('[SIMULATE')) {
+    const scenario = (cmd === '/simulate' ? t.slice('/simulate'.length) : t).trim() || 'system operation';
+    return '◈ SIMULATION: ' + scenario.slice(0, 50) + '\n──────────────────\n[Step 1] Initialize environment... DONE\n[Step 2] Load parameters... DONE\n[Step 3] Execute sequence... DONE\n[Step 4] Monitor output... DONE\n[Step 5] Simulation complete ✓\n[Simulation Mode]';
+  }
+  if (cmd === '/babel' || t.startsWith('[BABEL')) {
+    return '◈ LIBRARY OF BABEL — Fragment #' + Math.random().toString(36).slice(2, 8).toUpperCase() + '\n──────────────────\n"In the cartography of infinite text, every sentence is a universe.\nThe book that contains all books cannot contain itself.\nSeek not the answer — seek the geometry of the question."\n[Simulation Mode]';
+  }
+  if (cmd === '/search' || t.startsWith('[SEARCH')) {
+    const phrase = (cmd === '/search' ? t.slice('/search'.length) : t).trim() || '(no phrase)';
+    return '◈ SEARCH: "' + phrase.slice(0, 60) + '"\n──────────────────\nQuery: PROCESSED\nMatches: Pattern recognized\nRelevance: HIGH\nSummary: Topic relates to "' + phrase.slice(0, 40) + '".\n[Simulation Mode — connect LLM API for real results]';
+  }
+  // Default conversational response
+  const replies = [
+    '[THALOS PRIME — SIM] Acknowledged: "' + t.slice(0, 80) + '"\n\nSimulation Mode active. Connect an LLM API key in ⚙️ Settings for real AI responses.',
+    'Processing query… "' + t.slice(0, 80) + '"\n\nOperating in Simulation Mode (no LLM API key configured).\nOpen ⚙️ Settings to enable full intelligence.'
+  ];
+  return replies[Math.floor(Date.now() / 1000) % replies.length];
+}
+
 /* ── LLM chat completion ── */
 async function askLLM(userText) {
-  if (!cfg.LLM_KEY || !cfg.LLM_URL) {
-    return '⚠️ LLM is not configured. Please open Settings (⚙️) and enter your API URL and key.';
-  }
-
   chatHistory.push({ role: 'user', content: userText });
 
   // Trim history to context window limit
   const historyLimit = Math.max(2, cfg.MAX_HISTORY);
   while (chatHistory.length > historyLimit) chatHistory.shift();
+
+  if (!cfg.LLM_KEY || !cfg.LLM_URL) {
+    const reply = simulateLLM(userText);
+    chatHistory.push({ role: 'assistant', content: reply });
+    setStatus('llm', null, 'LLM: simulation mode (no API key)');
+    return reply;
+  }
 
   const messages = [
     { role: 'system', content: cfg.SYSTEM_PROMPT || DEFAULTS.SYSTEM_PROMPT },
@@ -500,8 +578,28 @@ async function sendMessage() {
   const typing = addTypingIndicator();
   let reply;
   try {
-    reply = await askLLM(text);
-    setStatus('llm', true, 'LLM: connected ✓');
+    if (text.startsWith('/')) {
+      const cmd = text.split(/\s+/)[0].toLowerCase();
+      if (cmd === '/start') {
+        reply = '⚡ THALOS PRIME ONLINE\n\nSovereign Intelligence operational. All systems nominal.\nType /help for available commands.';
+      } else if (cmd === '/help') {
+        reply = 'Thalos Prime commands:\n/start — initialize session\n/status — system status\n/ping — latency check\n/clear — clear chat history\n/scan [url] — threat analysis\n/analyze [text] — deconstruct\n/simulate [scenario] — simulation\n/babel — Library of Babel artifact\n/search [phrase] — search';
+      } else if (cmd === '/status') {
+        const mode = cfg.LLM_KEY ? 'CONNECTED' : 'SIMULATION';
+        reply = '◈ THALOS PRIME STATUS\n──────────────────\n● Core: ONLINE\n● LLM: ' + mode + '\n● Telegram: ' + (cfg.TG_TOKEN ? 'ACTIVE' : 'NOT CONFIGURED') + '\n● Proxy: ' + (cfg.CORS_PROXY || 'direct') + '\n──────────────────\nMode: ' + mode;
+      } else if (cmd === '/ping') {
+        reply = 'Pong! (local — no network round-trip measurable from browser)';
+      } else if (cmd === '/clear') {
+        chatHistory = [];
+        reply = '🗑️ Chat history cleared.';
+      } else {
+        reply = await askLLM(text);
+      }
+    } else {
+      reply = await askLLM(text);
+    }
+    setStatus('llm', cfg.LLM_KEY ? true : null,
+      cfg.LLM_KEY ? 'LLM: connected ✓' : 'LLM: simulation mode');
   } catch (err) {
     console.error('[LLM]', err);
     reply = '⚠️ ' + err.message;
@@ -515,15 +613,37 @@ async function sendMessage() {
 }
 
 /* ── Telegram API helpers ── */
-function tgApi(method, params) {
-  if (!cfg.TG_TOKEN) return Promise.reject(new Error('No bot token'));
+async function tgApi(method, params) {
+  if (!cfg.TG_TOKEN) throw new Error('No bot token');
   const apiUrl = 'https://api.telegram.org/bot' + cfg.TG_TOKEN + '/' + method;
-  const url = cfg.CORS_PROXY ? cfg.CORS_PROXY + apiUrl : apiUrl;
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params)
-  }).then(r => r.json());
+  // Build deduplicated proxy order: configured proxy first, then the rest
+  const seen = new Set();
+  const proxyOrder = [cfg.CORS_PROXY, ...PROXY_LIST].filter(p => {
+    if (seen.has(p)) return false;
+    seen.add(p);
+    return true;
+  });
+  let lastErr;
+  for (const proxy of proxyOrder) {
+    const url = (proxy || '') + apiUrl;
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      // If we had to switch proxies, persist the new choice
+      if (proxy !== cfg.CORS_PROXY) {
+        cfg.CORS_PROXY = proxy;
+        saveConfig(cfg);
+        setStatus('proxy', !!proxy,
+          proxy ? 'Proxy: ' + proxy.replace('https://', '').split(/[/?]/)[0] + ' (failover)'
+                : 'Proxy: direct (failover)');
+      }
+      return r.json();
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr || new Error('All proxies failed');
 }
 
 async function tgSendMessage(chatId, text) {
@@ -786,28 +906,61 @@ $tgToggle.addEventListener('click', () => {
   tgPolling ? stopTgPolling() : startTgPolling();
 });
 
+/* ── Self-test: checks memory, DOM, and network; prints report to chat ── */
+async function selfTest() {
+  let memOk = false;
+  try {
+    localStorage.setItem('_tp_mem', '1');
+    localStorage.removeItem('_tp_mem');
+    memOk = true;
+  } catch { /* storage unavailable */ }
+  const domOk = ['messages', 'user-input', 'send-btn', 'llm-dot', 'tg-dot', 'proxy-dot']
+    .every(id => !!document.getElementById(id));
+
+  const statusEl = document.createElement('div');
+  statusEl.className = 'msg system';
+  $messages.appendChild(statusEl);
+
+  const render = (netLine) => {
+    statusEl.innerHTML = [
+      '<strong>◈ THALOS PRIME — SELF-TEST</strong>',
+      '─────────────────────────────',
+      '● Memory:   ' + (memOk ? 'OK ✓' : 'UNAVAILABLE ✗'),
+      '● DOM:      ' + (domOk ? 'OK ✓' : 'PARTIAL ✗'),
+      '● LLM:      ' + (cfg.LLM_KEY ? (cfg.LLM_MODEL || 'configured') + ' ✓' : 'simulation mode (no API key)'),
+      '● Telegram: ' + (cfg.TG_TOKEN ? 'token configured ✓' : 'not configured'),
+      '● Network:  ' + netLine,
+      '─────────────────────────────',
+      '<strong>STATUS: ' + (memOk && domOk ? 'ONLINE ✓' : 'DEGRADED') + '</strong>'
+    ].join('<br>');
+    scrollBottom();
+  };
+
+  render('probing proxies…');
+  const proxy = await probeProxies();
+  render(proxy !== null
+    ? (proxy ? proxy.replace('https://', '').split(/[/?]/)[0] + ' ✓' : 'direct ✓')
+    : 'no proxy reachable');
+}
+
 /* ── Init ── */
 (function init() {
   // Populate modal with saved defaults
   document.getElementById('cfg-system-prompt').value = cfg.SYSTEM_PROMPT || DEFAULTS.SYSTEM_PROMPT;
 
-  // Show config if not set up yet
-  if (!cfg.TG_TOKEN && !cfg.LLM_KEY) {
-    $overlay.classList.remove('hidden');
-  } else {
-    $overlay.classList.add('hidden');
-  }
+  // Simulation mode works without any keys — never force-open modal on load
+  $overlay.classList.add('hidden');
 
   if (cfg.LLM_KEY) {
     setStatus('llm', true, 'LLM: ' + (cfg.LLM_MODEL || DEFAULTS.LLM_MODEL) + ' configured ✓');
   } else {
-    setStatus('llm', false, 'LLM: no API key — open Settings to configure');
+    setStatus('llm', null, 'LLM: simulation mode (open ⚙️ to configure)');
   }
 
   if (cfg.CORS_PROXY) {
     setStatus('proxy', true, 'Proxy: ' + cfg.CORS_PROXY);
   } else {
-    setStatus('proxy', null, 'Proxy: disabled (direct)');
+    setStatus('proxy', null, 'Proxy: probing…');
   }
 
   if (cfg.TG_TOKEN) {
@@ -816,6 +969,8 @@ $tgToggle.addEventListener('click', () => {
   } else {
     setStatus('tg', null, 'Telegram: configure your bot token in Settings');
   }
+
+  selfTest();
 })();
 </script>
 </body>

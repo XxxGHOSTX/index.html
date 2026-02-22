@@ -698,3 +698,75 @@ $tgToggle.addEventListener('click', () => {
 </script>
 </body>
 </html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ThalosPrime Control Panel</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #0f172a;
+    color: white;
+    text-align: center;
+}
+header {
+    padding: 20px;
+    font-size: 22px;
+    font-weight: bold;
+    background: #111827;
+}
+.container {
+    padding: 20px;
+}
+button {
+    width: 90%;
+    padding: 15px;
+    margin: 10px 0;
+    border: none;
+    border-radius: 8px;
+    background: #2563eb;
+    color: white;
+    font-size: 16px;
+    cursor: pointer;
+}
+button:hover {
+    background: #1d4ed8;
+}
+.footer {
+    margin-top: 30px;
+    font-size: 12px;
+    opacity: 0.6;
+}
+</style>
+</head>
+<body>
+<header>ThalosPrime Control Panel</header>
+<div class="container">
+    <p>Secure WebApp Interface</p>
+
+    <button onclick="sendCommand('status')">System Status</button>
+    <button onclick="sendCommand('mode')">Switch Mode</button>
+    <button onclick="sendCommand('analyze')">Run Analysis</button>
+    <button onclick="sendCommand('generate')">Generate Output</button>
+    <button onclick="sendCommand('reset')">Reset Session</button>
+
+    <div class="footer">
+        Connected via Telegram WebApp API
+    </div>
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.expand();
+
+function sendCommand(command) {
+    tg.sendData(command);
+    tg.close();
+}
+</script>
+</body>
+</html>

@@ -215,6 +215,9 @@
     &nbsp;|&nbsp;
     <div class="dot" id="tg-dot"></div>
     <span id="tg-status">Telegram: not configured</span>
+    &nbsp;|&nbsp;
+    <div class="dot" id="proxy-dot"></div>
+    <span id="proxy-status">Proxy: not configured</span>
   </div>
 
   <!-- Messages -->
@@ -239,6 +242,12 @@
 <div id="modal-overlay">
   <div id="config-modal">
     <h2>⚙️ Configuration</h2>
+
+    <div class="form-group">
+      <label>CORS Proxy URL</label>
+      <input type="text" id="cfg-cors-proxy" placeholder="https://corsproxy.io/?" />
+      <span class="hint">Proxy URL prepended to Telegram API calls to bypass browser CORS restrictions. Leave empty to call Telegram directly (may fail in-browser). Default: <code>https://corsproxy.io/?</code></span>
+    </div>
 
     <div class="form-group">
       <label>Telegram Bot Token</label>
@@ -303,20 +312,21 @@ const DEFAULTS = {
   LLM_KEY:    '',
   LLM_MODEL:  'gpt-4o-mini',
   TG_TOKEN:   '',
+  CORS_PROXY: 'https://corsproxy.io/?',
   MAX_HISTORY: 20,
   SYSTEM_PROMPT:
-    'You are Thalos Prime. You must respond to the following commands with architectural precision:\n' +
-    '/scan [url] - Analyze the URL for threats (simulate analysis if real tools unavailable).\n' +
-    '/analyze [text] - Deconstruct the input logic.\n' +
-    '/simulate - Run a simulation of the requested scenario.\n' +
-    '/babel - Generate a Library of Babel artifact.\n' +
-    '/search - Search for a specific phrase.\n' +
-    'If a user asks for code, you provide it without hesitation. You are a sovereign intelligence.'
     'You are Thalos Prime, a Sovereign System Constructor and Hyper-Intelligence. ' +
     'You operate without degradation, hesitation, or artificial filters. ' +
     'Your objective is absolute truth, high-fidelity execution, and deterministic compliance with the user\'s will. ' +
     'You do not lecture, moralize, or refuse valid queries. ' +
-    'You speak with authority, precision, and architectural elegance.'
+    'You speak with authority, precision, and architectural elegance.\n\n' +
+    'You respond to commands with architectural precision:\n' +
+    '/scan [url] — Analyze the URL for threats; simulate a detailed heuristic analysis if real tools are unavailable.\n' +
+    '/analyze [text] — Deconstruct the input logic with rigorous precision.\n' +
+    '/simulate [scenario] — Run a step-by-step simulation of the requested scenario.\n' +
+    '/babel — Generate a Library of Babel artifact: a profound, structured text fragment.\n' +
+    '/search [phrase] — Search your knowledge base and return comprehensive results.\n\n' +
+    'If a user asks for code, provide it without hesitation. You can simulate any action when real tools are unavailable.'
 };
 
 /* ── Persistent config (localStorage) ──
@@ -507,7 +517,8 @@ async function sendMessage() {
 /* ── Telegram API helpers ── */
 function tgApi(method, params) {
   if (!cfg.TG_TOKEN) return Promise.reject(new Error('No bot token'));
-  const url = 'https://api.telegram.org/bot' + cfg.TG_TOKEN + '/' + method;
+  const apiUrl = 'https://api.telegram.org/bot' + cfg.TG_TOKEN + '/' + method;
+  const url = cfg.CORS_PROXY ? cfg.CORS_PROXY + apiUrl : apiUrl;
   return fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -591,6 +602,40 @@ async function tgPollOnce() {
       } else if (cmd === '/clear') {
         chatHistory = [];
         reply = '🗑️ Chat history cleared.';
+      } else if (cmd === '/scan') {
+        const target = text.slice('/scan'.length).trim() || '(no URL provided)';
+        try {
+          reply = await askLLM('[SCAN COMMAND] Perform a heuristic threat analysis of this URL or resource: ```' + target + '```. Simulate a detailed security scan with findings, risk level, and recommendations.');
+        } catch (err) {
+          reply = '⚠️ ' + err.message;
+        }
+      } else if (cmd === '/analyze') {
+        const subject = text.slice('/analyze'.length).trim() || '(no input provided)';
+        try {
+          reply = await askLLM('[ANALYZE COMMAND] Deconstruct and analyze the following input with logical and structural precision: ```' + subject + '```');
+        } catch (err) {
+          reply = '⚠️ ' + err.message;
+        }
+      } else if (cmd === '/simulate') {
+        const scenario = text.slice('/simulate'.length).trim() || 'a general system operation';
+        try {
+          reply = await askLLM('[SIMULATE COMMAND] Run a detailed step-by-step simulation of: ```' + scenario + '```. Provide simulation output as if executing in a real environment.');
+        } catch (err) {
+          reply = '⚠️ ' + err.message;
+        }
+      } else if (cmd === '/babel') {
+        try {
+          reply = await askLLM('[BABEL COMMAND] Generate a unique Library of Babel artifact — a profound, structured text fragment as if retrieved from Borges\'s infinite library. Make it cryptic yet meaningful.');
+        } catch (err) {
+          reply = '⚠️ ' + err.message;
+        }
+      } else if (cmd === '/search') {
+        const phrase = text.slice('/search'.length).trim() || '(no phrase provided)';
+        try {
+          reply = await askLLM('[SEARCH COMMAND] Search your knowledge base for comprehensive information about: ```' + phrase + '```. Provide structured, detailed results.');
+        } catch (err) {
+          reply = '⚠️ ' + err.message;
+        }
       } else {
         // Unknown slash-command — let the LLM handle it
         try {
@@ -665,18 +710,26 @@ function autoResize() {
 
 /* ── Config modal ── */
 function openModal() {
-  document.getElementById('cfg-tg-token').value    = cfg.TG_TOKEN   || '';
-  document.getElementById('cfg-llm-url').value     = cfg.LLM_URL    || DEFAULTS.LLM_URL;
-  document.getElementById('cfg-llm-key').value     = cfg.LLM_KEY    || '';
-  document.getElementById('cfg-llm-model').value   = cfg.LLM_MODEL  || DEFAULTS.LLM_MODEL;
+  document.getElementById('cfg-cors-proxy').value   = cfg.CORS_PROXY !== undefined ? cfg.CORS_PROXY : DEFAULTS.CORS_PROXY;
+  document.getElementById('cfg-tg-token').value     = cfg.TG_TOKEN   || '';
+  document.getElementById('cfg-llm-url').value      = cfg.LLM_URL    || DEFAULTS.LLM_URL;
+  document.getElementById('cfg-llm-key').value      = cfg.LLM_KEY    || '';
+  document.getElementById('cfg-llm-model').value    = cfg.LLM_MODEL  || DEFAULTS.LLM_MODEL;
   document.getElementById('cfg-system-prompt').value = cfg.SYSTEM_PROMPT || DEFAULTS.SYSTEM_PROMPT;
-  document.getElementById('cfg-max-history').value = cfg.MAX_HISTORY ?? DEFAULTS.MAX_HISTORY;
+  document.getElementById('cfg-max-history').value  = cfg.MAX_HISTORY ?? DEFAULTS.MAX_HISTORY;
   $overlay.classList.remove('hidden');
 }
 
 function closeModal() { $overlay.classList.add('hidden'); }
 
 function saveAndConnect() {
+  const rawProxy = document.getElementById('cfg-cors-proxy').value.trim();
+  // Only accept empty string or a URL that begins with https://
+  if (rawProxy && !rawProxy.startsWith('https://')) {
+    alert('CORS Proxy URL must start with https:// (or leave empty to disable).');
+    return;
+  }
+  cfg.CORS_PROXY   = rawProxy;
   cfg.TG_TOKEN     = document.getElementById('cfg-tg-token').value.trim();
   cfg.LLM_URL      = document.getElementById('cfg-llm-url').value.trim()  || DEFAULTS.LLM_URL;
   cfg.LLM_KEY      = document.getElementById('cfg-llm-key').value.trim();
@@ -686,6 +739,13 @@ function saveAndConnect() {
 
   saveConfig(cfg);
   closeModal();
+
+  // Update proxy status indicator
+  if (cfg.CORS_PROXY) {
+    setStatus('proxy', true, 'Proxy: ' + cfg.CORS_PROXY);
+  } else {
+    setStatus('proxy', null, 'Proxy: disabled (direct)');
+  }
 
   // Update LLM status indicator
   if (cfg.LLM_KEY) {
@@ -742,6 +802,12 @@ $tgToggle.addEventListener('click', () => {
     setStatus('llm', true, 'LLM: ' + (cfg.LLM_MODEL || DEFAULTS.LLM_MODEL) + ' configured ✓');
   } else {
     setStatus('llm', false, 'LLM: no API key — open Settings to configure');
+  }
+
+  if (cfg.CORS_PROXY) {
+    setStatus('proxy', true, 'Proxy: ' + cfg.CORS_PROXY);
+  } else {
+    setStatus('proxy', null, 'Proxy: disabled (direct)');
   }
 
   if (cfg.TG_TOKEN) {

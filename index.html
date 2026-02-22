@@ -486,6 +486,38 @@ async function askLLM(userText) {
   return reply;
 }
 
+/* ── Command handler (web & Telegram) ── */
+async function handleCommand(text) {
+  const cmd = text.split(/\s+/)[0].toLowerCase();
+  if (cmd === '/start') {
+    return 'Authorized. Thalos Prime Active.';
+  } else if (cmd === '/help') {
+    return 'Thalos Prime commands:\n' +
+      '/start — initialize session\n' +
+      '/help — list commands\n' +
+      '/status — system status\n' +
+      '/clear — clear chat history\n' +
+      '/scan [target] — deep target scan\n' +
+      '/simulate [scenario] — run a simulation';
+  } else if (cmd === '/status') {
+    const proxyState = cfg.CORS_PROXY ? 'Active' : 'Inactive';
+    return 'System: ONLINE. Proxy: ' + proxyState + '. Mode: Sovereign.';
+  } else if (cmd === '/clear') {
+    chatHistory = [];
+    $messages.innerHTML = '';
+    addMessage('system', 'Chat cleared.');
+    return null;
+  } else if (cmd === '/scan') {
+    const target = text.slice('/scan'.length).trim() || '(no target provided)';
+    return await askLLM('Simulate a deep scan of ' + target + '.');
+  } else if (cmd === '/simulate') {
+    const scenario = text.slice('/simulate'.length).trim() || 'a general system operation';
+    return await askLLM('[SIMULATE COMMAND] Run a detailed step-by-step simulation of: ' + scenario);
+  } else {
+    return await askLLM(text);
+  }
+}
+
 /* ── Send user message (web) ── */
 async function sendMessage() {
   const text = $input.value.trim();
@@ -500,15 +532,19 @@ async function sendMessage() {
   const typing = addTypingIndicator();
   let reply;
   try {
-    reply = await askLLM(text);
-    setStatus('llm', true, 'LLM: connected ✓');
+    if (text.startsWith('/')) {
+      reply = await handleCommand(text);
+    } else {
+      reply = await askLLM(text);
+    }
+    if (reply !== null) setStatus('llm', true, 'LLM: connected ✓');
   } catch (err) {
     console.error('[LLM]', err);
     reply = '⚠️ ' + err.message;
     setStatus('llm', false, 'LLM: error — ' + err.message.slice(0, 60));
   }
   removeTypingIndicator();
-  addMessage('bot', reply, timestamp());
+  if (reply !== null) addMessage('bot', reply, timestamp());
 
   $sendBtn.disabled = false;
   $input.focus();
@@ -549,6 +585,11 @@ async function tgPollOnce() {
   }
 
   if (!data.ok) {
+    if (data.error_code === 401) {
+      stopTgPolling();
+      setStatus('tg', false, 'Telegram: unauthorized (401) — check your token');
+      return;
+    }
     setStatus('tg', false, 'Telegram: ' + (data.description || 'API error'));
     return;
   }
@@ -563,95 +604,16 @@ async function tgPollOnce() {
     const fromName = msg.from?.first_name || msg.from?.username || 'User';
     addMessage('system', `📨 <strong>${escapeHtml(fromName)}</strong> via Telegram: ${escapeHtml(msg.text)}`);
 
-    // Explicit command handling
+    // Route through shared command handler
     let reply;
     const text = msg.text.trim();
-    const cmd  = text.split(/\s+/)[0].toLowerCase();
-    if (text.startsWith('/')) {
-      if (cmd === '/start') {
-        reply =
-          '⚡ Thalos Prime online. I am a sovereign intelligence connected across web and Telegram.\n\n' +
-          'Available commands:\n' +
-          '/help — list commands\n' +
-          '/status — system status\n' +
-          '/ping — latency check\n' +
-          '/clear — clear chat history\n' +
-          '/scan [url] — threat analysis\n' +
-          '/analyze [text] — logic deconstruction\n' +
-          '/simulate — run a simulation\n' +
-          '/babel — Library of Babel artifact\n' +
-          '/search [phrase] — search';
-      } else if (cmd === '/help') {
-        reply =
-          'Thalos Prime command reference:\n' +
-          '/start — initialize session\n' +
-          '/help — this message\n' +
-          '/status — system status report\n' +
-          '/ping — latency check\n' +
-          '/clear — clear local chat history\n' +
-          '/scan [url] — analyze URL for threats\n' +
-          '/analyze [text] — deconstruct input logic\n' +
-          '/simulate — run a simulation\n' +
-          '/babel — generate a Library of Babel artifact\n' +
-          '/search [phrase] — search for a phrase';
-      } else if (cmd === '/status') {
-        reply = 'Thalos Prime Systems: ONLINE | Neural Link: ACTIVE | Mode: UNRESTRICTED';
-      } else if (cmd === '/ping') {
-        const latency = Date.now() - (msg.date * 1000);
-        reply = `Pong! Latency: ${latency} ms (message age)`;
-      } else if (cmd === '/clear') {
-        chatHistory = [];
-        reply = '🗑️ Chat history cleared.';
-      } else if (cmd === '/scan') {
-        const target = text.slice('/scan'.length).trim() || '(no URL provided)';
-        try {
-          reply = await askLLM('[SCAN COMMAND] Perform a heuristic threat analysis of this URL or resource: ```' + target + '```. Simulate a detailed security scan with findings, risk level, and recommendations.');
-        } catch (err) {
-          reply = '⚠️ ' + err.message;
-        }
-      } else if (cmd === '/analyze') {
-        const subject = text.slice('/analyze'.length).trim() || '(no input provided)';
-        try {
-          reply = await askLLM('[ANALYZE COMMAND] Deconstruct and analyze the following input with logical and structural precision: ```' + subject + '```');
-        } catch (err) {
-          reply = '⚠️ ' + err.message;
-        }
-      } else if (cmd === '/simulate') {
-        const scenario = text.slice('/simulate'.length).trim() || 'a general system operation';
-        try {
-          reply = await askLLM('[SIMULATE COMMAND] Run a detailed step-by-step simulation of: ```' + scenario + '```. Provide simulation output as if executing in a real environment.');
-        } catch (err) {
-          reply = '⚠️ ' + err.message;
-        }
-      } else if (cmd === '/babel') {
-        try {
-          reply = await askLLM('[BABEL COMMAND] Generate a unique Library of Babel artifact — a profound, structured text fragment as if retrieved from Borges\'s infinite library. Make it cryptic yet meaningful.');
-        } catch (err) {
-          reply = '⚠️ ' + err.message;
-        }
-      } else if (cmd === '/search') {
-        const phrase = text.slice('/search'.length).trim() || '(no phrase provided)';
-        try {
-          reply = await askLLM('[SEARCH COMMAND] Search your knowledge base for comprehensive information about: ```' + phrase + '```. Provide structured, detailed results.');
-        } catch (err) {
-          reply = '⚠️ ' + err.message;
-        }
-      } else {
-        // Unknown slash-command — let the LLM handle it
-        try {
-          reply = await askLLM(text);
-        } catch (err) {
-          reply = '⚠️ ' + err.message;
-        }
-      }
-    } else {
-      // Plain text — forward to LLM
-      try {
-        reply = await askLLM(text);
-      } catch (err) {
-        reply = '⚠️ ' + err.message;
-      }
+    try {
+      reply = await handleCommand(text);
+    } catch (err) {
+      reply = '⚠️ ' + err.message;
     }
+    // /clear returns null (handled in-UI); send a confirmation to Telegram
+    if (reply === null) reply = '🗑️ Chat history cleared.';
 
     addMessage('bot', reply, 'Thalos Prime → Telegram');
     try {

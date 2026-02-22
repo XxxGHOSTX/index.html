@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate HTML & JS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run structural & syntax checks
+        run: |
+          node -e "
+          const fs = require('fs');
+          const html = fs.readFileSync('index.html', 'utf8');
+          let pass = true;
+
+          function check(label, cond) {
+            if (!cond) { console.error('FAIL:', label); pass = false; }
+            else        { console.log('OK:  ', label); }
+          }
+
+          // JS syntax
+          const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
+          try { new Function(script); check('JS syntax', true); }
+          catch(e) { check('JS syntax: ' + e.message, false); }
+
+          // Single HTML document
+          check('single </html>', (html.match(/<\/html>/g)||[]).length === 1);
+          check('single <!DOCTYPE>', (html.match(/<!DOCTYPE html>/gi)||[]).length === 1);
+
+          // Required element IDs
+          ['messages','user-input','send-btn','modal-overlay',
+           'cfg-cors-proxy','cfg-tg-token','cfg-llm-url','cfg-llm-key',
+           'cfg-llm-model','cfg-system-prompt','llm-dot','tg-dot','proxy-dot'].forEach(id => {
+            check('element #' + id, html.includes('id=\"' + id + '\"'));
+          });
+
+          // Required JS functions
+          ['handleCommand','askLLM','tgPollOnce','setStatus','escapeHtml',
+           'saveAndConnect','pingLLM','pingTelegram'].forEach(fn => {
+            check('function ' + fn, script.includes('function ' + fn));
+          });
+
+          // DEFAULTS must include CORS_PROXY
+          check('DEFAULTS.CORS_PROXY present', script.includes(\"CORS_PROXY:\"));
+
+          // No duplicate documents
+          check('single <html>', (html.match(/<html/g)||[]).length === 1);
+
+          if (!pass) process.exit(1);
+          console.log('All checks passed.');
+          "

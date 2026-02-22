@@ -348,10 +348,11 @@ function saveConfig(cfg) {
 let cfg = loadConfig();
 
 /* ── Chat history (for LLM context) ── */
-let chatHistory = [];       // [{role, content}]
-let tgOffset    = 0;        // Telegram getUpdates offset
-let tgPollTimer = null;     // setInterval handle
-let tgPolling   = false;
+let chatHistory  = [];      // [{role, content}]
+let tgOffset     = 0;       // Telegram getUpdates offset
+let tgPollTimer  = null;    // setTimeout handle
+let tgPolling    = false;
+let tgPollErrors = 0;       // consecutive error counter (for backoff)
 
 /* ── DOM refs ── */
 const $messages   = document.getElementById('messages');
@@ -580,11 +581,13 @@ async function tgPollOnce() {
       allowed_updates: ['message']
     });
   } catch (err) {
+    tgPollErrors++;
     setStatus('tg', false, 'Telegram: poll error — ' + err.message.slice(0, 50));
     return;
   }
 
   if (!data.ok) {
+    tgPollErrors++;
     if (data.error_code === 401) {
       stopTgPolling();
       setStatus('tg', false, 'Telegram: unauthorized (401) — check your token');
@@ -593,6 +596,8 @@ async function tgPollOnce() {
     setStatus('tg', false, 'Telegram: ' + (data.description || 'API error'));
     return;
   }
+
+  tgPollErrors = 0; // reset backoff on success
 
   setStatus('tg', true, 'Telegram: @thalosprime_bot connected ✓');
 
@@ -630,20 +635,21 @@ function startTgPolling() {
     setStatus('tg', false, 'Telegram: no token — configure in Settings');
     return;
   }
-  tgPolling = true;
+  tgPolling    = true;
+  tgPollErrors = 0;
   $tgPanel.classList.remove('hidden');
   $tgToggle.textContent = 'Stop polling';
 
-  // Sequential polling: start the next poll only after the previous one
-  // finishes, preventing overlapping requests when a long-poll + LLM
-  // response cycle takes more than a fixed interval would allow.
+  // Sequential polling with exponential backoff on errors.
+  // Delays: 1 s (first error), 2 s, 4 s, 8 s … capped at 30 s.
   async function pollLoop() {
     while (tgPolling) {
       await tgPollOnce();
-      if (tgPolling) {
-        // Brief pause between polls to avoid hammering the API
-        await new Promise(resolve => { tgPollTimer = setTimeout(resolve, 1000); });
-      }
+      if (!tgPolling) break;
+      const delay = tgPollErrors > 0
+        ? Math.min(1000 * Math.pow(2, tgPollErrors - 1), 30000)
+        : 1000;
+      await new Promise(resolve => { tgPollTimer = setTimeout(resolve, delay); });
     }
   }
   pollLoop();
@@ -668,6 +674,110 @@ function escapeHtml(str) {
 function autoResize() {
   $input.style.height = 'auto';
   $input.style.height = Math.min($input.scrollHeight, 120) + 'px';
+}
+
+/* ── Live connection health checks ── */
+async function pingLLM() {
+  if (!cfg.LLM_KEY || !cfg.LLM_URL) {
+    setStatus('llm', false, 'LLM: no API key — open Settings to configure');
+    return false;
+  }
+  setStatus('llm', null, 'LLM: verifying…');
+  try {
+    const endpoint = cfg.LLM_URL.replace(/\/$/, '') + '/chat/completions';
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + cfg.LLM_KEY
+      },
+      body: JSON.stringify({
+        model:      cfg.LLM_MODEL || DEFAULTS.LLM_MODEL,
+        messages:   [{ role: 'user', content: 'ping' }],
+        max_tokens: 1
+      })
+    });
+    if (res.ok) {
+      setStatus('llm', true, 'LLM: ' + (cfg.LLM_MODEL || DEFAULTS.LLM_MODEL) + ' ✓');
+      return true;
+    }
+    const errData = await res.json().catch(() => ({}));
+    const msg = errData?.error?.message || res.statusText;
+    if (res.status === 401) {
+      setStatus('llm', false, 'LLM: unauthorized — check API key');
+    } else {
+      setStatus('llm', false, 'LLM: error ' + res.status + ' — ' + msg.slice(0, 50));
+    }
+    return false;
+  } catch (err) {
+    setStatus('llm', false, 'LLM: unreachable — ' + err.message.slice(0, 50));
+    return false;
+  }
+}
+
+async function pingTelegram() {
+  if (!cfg.TG_TOKEN) {
+    setStatus('tg', null, 'Telegram: configure your bot token in Settings');
+    return false;
+  }
+  setStatus('tg', null, 'Telegram: verifying…');
+  try {
+    const data = await tgApi('getMe', {});
+    if (data.ok) {
+      const botName = data.result?.username ? '@' + data.result.username : 'bot';
+      setStatus('tg', true, 'Telegram: ' + botName + ' verified ✓');
+      return true;
+    }
+    if (data.error_code === 401) {
+      setStatus('tg', false, 'Telegram: unauthorized (401) — check your token');
+    } else {
+      setStatus('tg', false, 'Telegram: ' + (data.description || 'API error'));
+    }
+    return false;
+  } catch (err) {
+    setStatus('tg', false, 'Telegram: unreachable — ' + err.message.slice(0, 50));
+    return false;
+  }
+}
+
+async function verifyConnections() {
+  await Promise.all([
+    cfg.LLM_KEY  ? pingLLM()      : Promise.resolve(),
+    cfg.TG_TOKEN ? pingTelegram() : Promise.resolve()
+  ]);
+}
+
+/* ── URL hash config loader (automated setup) ──
+   Pass a base64-encoded JSON config in the URL fragment:
+     index.html#cfg=<base64(JSON)>
+   The hash is stripped immediately after loading to keep credentials
+   out of browser history. Example:
+     btoa(JSON.stringify({TG_TOKEN:'123:abc', LLM_KEY:'sk-...',
+                          LLM_URL:'https://api.openai.com/v1',
+                          LLM_MODEL:'gpt-4o-mini'}))
+── */
+function applyHashConfig() {
+  if (!location.hash.startsWith('#cfg=')) return;
+  try {
+    const incoming = JSON.parse(atob(location.hash.slice(5)));
+    // Security: reject any LLM_URL or CORS_PROXY that could redirect API calls
+    // to attacker-controlled servers (which would capture the API key).
+    if (incoming.LLM_URL && !incoming.LLM_URL.startsWith('https://')) {
+      console.warn('[config] Rejected hash config: LLM_URL must start with https://');
+      return;
+    }
+    if (incoming.CORS_PROXY && !incoming.CORS_PROXY.startsWith('https://')) {
+      console.warn('[config] Rejected hash config: CORS_PROXY must start with https://');
+      return;
+    }
+    cfg = { ...cfg, ...incoming };
+    saveConfig(cfg);
+    // Remove hash immediately so credentials don't linger in browser history
+    history.replaceState(null, '', location.pathname + location.search);
+    addMessage('system', '⚡ Configuration loaded from URL — auto-connecting…');
+  } catch (e) {
+    console.warn('[config] Failed to parse URL hash config:', e.message);
+  }
 }
 
 /* ── Config modal ── */
@@ -702,28 +812,22 @@ function saveAndConnect() {
   saveConfig(cfg);
   closeModal();
 
-  // Update proxy status indicator
+  // Update proxy status immediately
   if (cfg.CORS_PROXY) {
     setStatus('proxy', true, 'Proxy: ' + cfg.CORS_PROXY);
   } else {
     setStatus('proxy', null, 'Proxy: disabled (direct)');
   }
 
-  // Update LLM status indicator
-  if (cfg.LLM_KEY) {
-    setStatus('llm', true, 'LLM: ' + cfg.LLM_MODEL + ' @ ' + cfg.LLM_URL);
-  } else {
-    setStatus('llm', false, 'LLM: no API key');
-  }
-
-  // Start Telegram polling if token provided
+  // Live-verify both connections, then start/restart Telegram polling
   stopTgPolling();
-  if (cfg.TG_TOKEN) {
-    addMessage('system', '🔗 Connecting to Telegram @thalosprime_bot…');
-    startTgPolling();
-  } else {
-    setStatus('tg', null, 'Telegram: no token configured');
-  }
+  (async () => {
+    await verifyConnections();
+    if (cfg.TG_TOKEN && !tgPolling) {
+      addMessage('system', '🔗 Connecting to Telegram…');
+      startTgPolling();
+    }
+  })();
 }
 
 /* ── Event listeners ── */
@@ -750,34 +854,36 @@ $tgToggle.addEventListener('click', () => {
 
 /* ── Init ── */
 (function init() {
-  // Populate modal with saved defaults
+  // 1. Load config from URL hash (automated/headless setup)
+  applyHashConfig();
+
+  // 2. Populate modal with current config
   document.getElementById('cfg-system-prompt').value = cfg.SYSTEM_PROMPT || DEFAULTS.SYSTEM_PROMPT;
 
-  // Show config if not set up yet
+  // 3. Show config modal if nothing is set up yet
   if (!cfg.TG_TOKEN && !cfg.LLM_KEY) {
     $overlay.classList.remove('hidden');
-  } else {
-    $overlay.classList.add('hidden');
+    return; // nothing to verify yet
   }
+  $overlay.classList.add('hidden');
 
-  if (cfg.LLM_KEY) {
-    setStatus('llm', true, 'LLM: ' + (cfg.LLM_MODEL || DEFAULTS.LLM_MODEL) + ' configured ✓');
-  } else {
-    setStatus('llm', false, 'LLM: no API key — open Settings to configure');
-  }
-
+  // 4. Set proxy status immediately (no network call needed)
   if (cfg.CORS_PROXY) {
     setStatus('proxy', true, 'Proxy: ' + cfg.CORS_PROXY);
   } else {
     setStatus('proxy', null, 'Proxy: disabled (direct)');
   }
 
-  if (cfg.TG_TOKEN) {
-    addMessage('system', '🔗 Resuming Telegram connection (@thalosprime_bot)…');
-    startTgPolling();
-  } else {
-    setStatus('tg', null, 'Telegram: configure your bot token in Settings');
-  }
+  // 5. Live-verify LLM + Telegram connections in the background.
+  //    After verification, start Telegram polling automatically if the
+  //    token is valid (pingTelegram confirms it before polling begins).
+  (async () => {
+    await verifyConnections();
+    if (cfg.TG_TOKEN && !tgPolling) {
+      addMessage('system', '🔗 Starting Telegram polling…');
+      startTgPolling();
+    }
+  })();
 })();
 </script>
 </body>

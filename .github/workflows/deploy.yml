@@ -1,0 +1,73 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  validate-and-deploy:
+    name: Validate & Deploy
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate HTML & JS syntax
+        run: |
+          node -e "
+          const fs = require('fs');
+          const html = fs.readFileSync('index.html', 'utf8');
+
+          // JS syntax
+          const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+          if (!script) { console.error('FAIL: no script block'); process.exit(1); }
+          try { new Function(script); } catch(e) { console.error('FAIL JS:', e.message); process.exit(1); }
+
+          // Single HTML document
+          if ((html.match(/<\/html>/g)||[]).length !== 1) { console.error('FAIL: multiple </html>'); process.exit(1); }
+
+          // Required element IDs
+          const ids = ['messages','user-input','send-btn','modal-overlay',
+                       'cfg-cors-proxy','cfg-tg-token','cfg-llm-url','cfg-llm-key',
+                       'cfg-llm-model','cfg-system-prompt','llm-dot','tg-dot','proxy-dot'];
+          ids.forEach(id => {
+            if (!html.includes('id=\"' + id + '\"')) {
+              console.error('FAIL: missing element #' + id); process.exit(1);
+            }
+          });
+
+          // Required JS functions
+          ['handleCommand','askLLM','tgPollOnce','setStatus','escapeHtml',
+           'saveAndConnect','pingLLM','pingTelegram'].forEach(fn => {
+            if (!script.includes('function ' + fn)) {
+              console.error('FAIL: missing function ' + fn); process.exit(1);
+            }
+          });
+
+          console.log('All validation checks passed.');
+          "
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
